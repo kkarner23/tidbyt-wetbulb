@@ -1,0 +1,40 @@
+name: Push Wet Bulb to Tidbyt
+
+on:
+  schedule:
+    # Hourly at :10 (after NWS hourly obs post), Oct-Apr only
+    - cron: "10 * * 1,2,3,4,10,11,12 *"
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v5
+
+      - name: Install Pixlet
+        run: |
+          curl -sL -o pixlet.tar.gz https://github.com/tidbyt/pixlet/releases/download/v0.34.0/pixlet_0.34.0_linux_amd64.tar.gz
+          tar -xzf pixlet.tar.gz
+          sudo mv pixlet /usr/local/bin/
+          pixlet version
+
+      - name: Render and push
+        env:
+          TIDBYT_DEVICE_ID: ${{ secrets.TIDBYT_DEVICE_ID }}
+          TIDBYT_API_KEY: ${{ secrets.TIDBYT_API_KEY }}
+        run: |
+          pixlet render wetbulb.star -o wetbulb.webp
+          if [ -s wetbulb.webp ]; then
+            pixlet push "$TIDBYT_DEVICE_ID" wetbulb.webp \
+              --api-token "$TIDBYT_API_KEY" \
+              --installation-id wetbulb \
+              --background
+            echo "Wet bulb pushed successfully!"
+          else
+            # App returned no frame (too warm) - drop it from the rotation
+            pixlet delete "$TIDBYT_DEVICE_ID" wetbulb --api-token "$TIDBYT_API_KEY" || true
+            echo "Too warm - wet bulb removed from rotation"
+          fi
