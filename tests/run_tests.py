@@ -84,7 +84,7 @@ def obs_literal(wb_f, age_min):
     if wb_f is None:
         return "None"
     t, td = td_for_wb(wb_f)
-    return '{"t": %s, "td": %s, "age_min": %s}' % (t, td, age_min)
+    return '{"t": %s, "td": %s, "age_min": %s, "station": "KTEST"}' % (t, td, age_min)
 
 
 def app_source(rename_main=False):
@@ -142,9 +142,9 @@ def main():
             cells.append((tf, h, int(v), t, tdc))
     lines = ",".join("(%d,%d,%d,%r,%r)" % cell for cell in cells)
     grid = """
-def fetch_forecast(lat, lon, tz):
+def fetch_forecast(lat, lon, tz, ua):
     return None
-def fetch_obs(station, now):
+def fetch_obs(station, lat, lon, now, ua):
     return None
 def main(config):
     for tf, h, v, t, td in [%s]:
@@ -163,9 +163,9 @@ def main(config):
     # 2. Render scenarios
     for name, start, now_wb, series, age, expect in SCENARIOS:
         extra = """
-def fetch_forecast(lat, lon, tz):
+def fetch_forecast(lat, lon, tz, ua):
     return %s
-def fetch_obs(station, now):
+def fetch_obs(station, lat, lon, now, ua):
     return %s
 """ % (forecast_literal(start, series), obs_literal(now_wb, age))
         r, made = run(name, extra, ["hide_above=0"])
@@ -178,9 +178,9 @@ def fetch_obs(station, now):
 
     # 3. Stale obs -> Open-Meteo fallback
     extra = """
-def fetch_forecast(lat, lon, tz):
+def fetch_forecast(lat, lon, tz, ua):
     return %s
-def fetch_obs(station, now):
+def fetch_obs(station, lat, lon, now, ua):
     return %s
 """ % (forecast_literal(17, SCENARIOS[0][3], current_wb_f=30), obs_literal(25, 180))
     r, made = run("stale_obs", extra)
@@ -190,9 +190,9 @@ def fetch_obs(station, now):
 
     # 4. Missing obs -> fallback
     extra = """
-def fetch_forecast(lat, lon, tz):
+def fetch_forecast(lat, lon, tz, ua):
     return %s
-def fetch_obs(station, now):
+def fetch_obs(station, lat, lon, now, ua):
     return None
 """ % forecast_literal(17, SCENARIOS[0][3])
     r, made = run("no_obs", extra)
@@ -200,12 +200,12 @@ def fetch_obs(station, now):
     failures += not ok
     print("%s missing obs falls back to open-meteo" % ("PASS" if ok else "FAIL"))
 
-    # 5. Warm -> hidden (no output file)
-    warm = [45, 46, 47, 47, 46, 45, 44, 43, 42, 41, 40, 40, 39]
+    # 5. Warm -> hidden (no output file); boundary: all >= 40F
+    warm = [45, 46, 47, 47, 46, 45, 44, 43, 42, 41, 40, 40, 40]
     extra = """
-def fetch_forecast(lat, lon, tz):
+def fetch_forecast(lat, lon, tz, ua):
     return %s
-def fetch_obs(station, now):
+def fetch_obs(station, lat, lon, now, ua):
     return %s
 """ % (forecast_literal(13, warm), obs_literal(45, 20))
     r, made = run("hidden", extra)
@@ -213,11 +213,24 @@ def fetch_obs(station, now):
     failures += not ok
     print("%s warm forecast renders nothing (exit %d, file=%s)" % ("PASS" if ok else "FAIL", r.returncode, made))
 
+    # 5b. Cooling to 39F anywhere in the 12h -> shown
+    cooling = [45, 46, 47, 47, 46, 45, 44, 43, 42, 41, 40, 40, 39]
+    extra = """
+def fetch_forecast(lat, lon, tz, ua):
+    return %s
+def fetch_obs(station, lat, lon, now, ua):
+    return %s
+""" % (forecast_literal(13, cooling), obs_literal(45, 20))
+    r, made = run("cooling", extra)
+    ok = made and "hidden:" not in (r.stdout + r.stderr)
+    failures += not ok
+    print("%s cooling to 39F renders a frame" % ("PASS" if ok else "FAIL"))
+
     # 6. Forecast down -> error frame
     extra = """
-def fetch_forecast(lat, lon, tz):
+def fetch_forecast(lat, lon, tz, ua):
     return None
-def fetch_obs(station, now):
+def fetch_obs(station, lat, lon, now, ua):
     return None
 """
     r, made = run("no_data", extra)

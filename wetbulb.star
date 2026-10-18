@@ -1,5 +1,5 @@
 """
-Tidbyt Wet Bulb - snowmaking conditions for Wakefield, MA.
+Tidbyt Wet Bulb - snowmaking conditions for any location.
 
 Current wet bulb (NWS station obs, Open-Meteo fallback), 3-hour trend,
 12-hour forecast bars colored by snowmaking zone, and the best window.
@@ -12,19 +12,20 @@ load("render.star", "render")
 load("time.star", "time")
 
 # ---------- Config defaults (override via pixlet render key=value) ----------
-DEFAULT_LAT = "42.5039"
+# The GitHub workflow passes these from repository Variables.
+DEFAULT_LAT = "42.5039"  # Wakefield, MA - local preview only
 DEFAULT_LON = "-71.0723"
-DEFAULT_STATION = "KBED"  # Hanscom Field, Bedford - inland ASOS
-DEFAULT_TZ = "America/New_York"
-DEFAULT_HIDE_ABOVE = "34"  # skip render when now + next 12h are all above this (F)
+DEFAULT_STATION = ""  # NWS station ID; blank = nearest station to lat/lon
+DEFAULT_TZ = "auto"  # Open-Meteo resolves the location's own timezone
+DEFAULT_HIDE_ABOVE = "39"  # skip render when now + next 12h are all above this (F)
+DEFAULT_CONTACT = "github.com/kkarner23/tidbyt-wetbulb"  # NWS asks for a contact in the User-Agent
 
 WINDOW_MAX = 27  # best window = hours at Wet snow or better
 OBS_MAX_AGE_MIN = 90  # older NWS obs falls back to Open-Meteo current
-USER_AGENT = "tidbyt-wetbulb (github.com/kkarner23/tidbyt-wetbulb)"
 
 # ---------- Layout ----------
 CHART_H = 24
-SCALE_MIN = 13  # 14F -> 1px, 37F+ -> 24px (1px per degree)
+SCALE_MIN = 16  # 17F -> 1px, 40F+ -> 24px (1px per degree)
 BAR_W = 2
 BAR_STEP = 3
 NO_GO_LINE_F = 28
@@ -75,14 +76,14 @@ def f1(x):
     return str(math.floor(x * 10.0 + 0.5) / 10.0)
 
 # ---------- Data ----------
-def fetch_forecast(lat, lon, tz):
+def fetch_forecast(lat, lon, tz, ua):
     url = (
         "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s" % (lat, lon) +
         "&hourly=temperature_2m,dew_point_2m,surface_pressure,wet_bulb_temperature_2m" +
         "&current=temperature_2m,dew_point_2m,surface_pressure" +
         "&forecast_hours=13&timezone=%s" % tz
     )
-    resp = http.get(url, headers = {"User-Agent": USER_AGENT})
+    resp = http.get(url, headers = {"User-Agent": ua})
     if resp.status_code != 200:
         print("open-meteo error: status %d" % resp.status_code)
         return None
@@ -102,11 +103,26 @@ def fetch_forecast(lat, lon, tz):
         },
     }
 
-def fetch_obs(station, now):
-    url = "https://api.weather.gov/stations/%s/observations/latest" % station
-    resp = http.get(url, headers = {"User-Agent": USER_AGENT, "Accept": "application/geo+json"})
+def nearest_station(lat, lon, ua):
+    url = "https://api.weather.gov/points/%s,%s/stations" % (lat, lon)
+    resp = http.get(url, headers = {"User-Agent": ua, "Accept": "application/geo+json"})
     if resp.status_code != 200:
-        print("nws error: status %d" % resp.status_code)
+        print("nws station lookup failed: status %d (outside the US?)" % resp.status_code)
+        return None
+    features = resp.json().get("features", [])
+    if len(features) == 0:
+        return None
+    return features[0]["properties"]["stationIdentifier"]
+
+def fetch_obs(station, lat, lon, now, ua):
+    if station == "":
+        station = nearest_station(lat, lon, ua)
+        if station == None:
+            return None
+    url = "https://api.weather.gov/stations/%s/observations/latest" % station
+    resp = http.get(url, headers = {"User-Agent": ua, "Accept": "application/geo+json"})
+    if resp.status_code != 200:
+        print("nws error: station %s status %d" % (station, resp.status_code))
         return None
     p = resp.json()["properties"]
     t = p["temperature"]["value"]
@@ -115,7 +131,7 @@ def fetch_obs(station, now):
         print("nws obs missing temp/dewpoint")
         return None
     obs_time = time.parse_time(p["timestamp"])
-    return {"t": t, "td": td, "age_min": (now - obs_time).minutes}
+    return {"t": t, "td": td, "age_min": (now - obs_time).minutes, "station": station}
 
 # ---------- Model ----------
 def build_model(fc, obs):
@@ -138,8 +154,9 @@ def build_model(fc, obs):
     vals = [rnd(now_wb)] + [rnd(v) for v in hourly_wb[1:13]]
     start_hour = int(fc["times"][0][11:13])
 
-    print("source=%s now_wb=%sF hour0_calc=%sF hour0_openmeteo=%sF obs_age_min=%s" % (
+    print("source=%s station=%s now_wb=%sF hour0_calc=%sF hour0_openmeteo=%sF obs_age_min=%s" % (
         source,
+        obs.get("station", "n/a") if obs != None else "n/a",
         f1(now_wb),
         f1(hourly_wb[0]),
         f1(c_to_f(fc["om_wb"][0])) if fc["om_wb"][0] != None else "n/a",
@@ -268,11 +285,12 @@ def main(config):
     station = config.get("station", DEFAULT_STATION)
     tz = config.get("tz", DEFAULT_TZ)
     hide_above = int(config.get("hide_above", DEFAULT_HIDE_ABOVE))
+    ua = "tidbyt-wetbulb (%s)" % config.get("contact", DEFAULT_CONTACT)
 
-    fc = fetch_forecast(lat, lon, tz)
+    fc = fetch_forecast(lat, lon, tz, ua)
     if fc == None:
         return render_error("NO DATA")
-    obs = fetch_obs(station, time.now())
+    obs = fetch_obs(station, lat, lon, time.now(), ua)
     m = build_model(fc, obs)
 
     # Off-season: nothing at or below hide_above in the next 12h -> no frame

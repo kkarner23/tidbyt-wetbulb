@@ -2,17 +2,41 @@ name: Push Wet Bulb to Tidbyt
 
 on:
   schedule:
-    # Hourly at :10 (after NWS hourly obs post), Oct-Apr only
-    - cron: "10 * * 1,2,3,4,10,11,12 *"
+    # Every 30 min at :10 and :40 (:10 catches the new NWS hourly obs).
+    # Runs year-round; the app hides itself when it's too warm.
+    - cron: "10,40 * * * *"
+    # Monthly keepalive - GitHub pauses schedules after 60 days without a commit
+    - cron: "0 12 1 * *"
   workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+  actions: write # keepalive re-enables this workflow
 
 jobs:
   push:
+    if: github.event.schedule != '0 12 1 * *'
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v5
+
+      - name: Check configuration
+        env:
+          TIDBYT_DEVICE_ID: ${{ secrets.TIDBYT_DEVICE_ID }}
+          TIDBYT_API_KEY: ${{ secrets.TIDBYT_API_KEY }}
+          LAT: ${{ vars.LAT }}
+          LON: ${{ vars.LON }}
+        run: |
+          missing=0
+          for s in TIDBYT_DEVICE_ID TIDBYT_API_KEY; do
+            if [ -z "${!s}" ]; then echo "::error::Missing secret $s (Settings > Secrets and variables > Actions > Secrets)"; missing=1; fi
+          done
+          for v in LAT LON; do
+            if [ -z "${!v}" ]; then echo "::error::Missing variable $v (Settings > Secrets and variables > Actions > Variables)"; missing=1; fi
+          done
+          exit $missing
 
       - name: Install Pixlet
         run: |
@@ -25,16 +49,38 @@ jobs:
         env:
           TIDBYT_DEVICE_ID: ${{ secrets.TIDBYT_DEVICE_ID }}
           TIDBYT_API_KEY: ${{ secrets.TIDBYT_API_KEY }}
+          LAT: ${{ vars.LAT }}
+          LON: ${{ vars.LON }}
+          STATION: ${{ vars.STATION }}
+          HIDE_ABOVE: ${{ vars.HIDE_ABOVE }}
+          TIMEZONE: ${{ vars.TIMEZONE }}
+          INSTALLATION_ID: ${{ vars.INSTALLATION_ID || 'wetbulb' }}
         run: |
-          pixlet render wetbulb.star -o wetbulb.webp
+          ARGS=(lat="$LAT" lon="$LON" contact="github.com/$GITHUB_REPOSITORY")
+          [ -n "$STATION" ] && ARGS+=(station="$STATION")
+          [ -n "$HIDE_ABOVE" ] && ARGS+=(hide_above="$HIDE_ABOVE")
+          [ -n "$TIMEZONE" ] && ARGS+=(tz="$TIMEZONE")
+
+          pixlet render wetbulb.star "${ARGS[@]}" -o wetbulb.webp
           if [ -s wetbulb.webp ]; then
             pixlet push "$TIDBYT_DEVICE_ID" wetbulb.webp \
               --api-token "$TIDBYT_API_KEY" \
-              --installation-id wetbulb \
+              --installation-id "$INSTALLATION_ID" \
               --background
             echo "Wet bulb pushed successfully!"
           else
             # App returned no frame (too warm) - drop it from the rotation
-            pixlet delete "$TIDBYT_DEVICE_ID" wetbulb --api-token "$TIDBYT_API_KEY" || true
+            pixlet delete "$TIDBYT_DEVICE_ID" "$INSTALLATION_ID" --api-token "$TIDBYT_API_KEY" || true
             echo "Too warm - wet bulb removed from rotation"
           fi
+
+  keepalive:
+    if: github.event.schedule == '0 12 1 * *'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-enable scheduled workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --method PUT "repos/$GITHUB_REPOSITORY/actions/workflows/push-wetbulb.yml/enable"
+          echo "Workflow kept alive"
