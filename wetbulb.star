@@ -24,11 +24,17 @@ WINDOW_MAX = 27  # best window = hours at Wet snow or better
 OBS_MAX_AGE_MIN = 90  # older NWS obs falls back to Open-Meteo current
 
 # ---------- Layout ----------
-CHART_H = 24
-SCALE_MIN = 16  # 17F -> 1px, 40F+ -> 24px (1px per degree)
+CHART_H = 22  # leaves a gap between the window underline and the bottom text
+SCALE_MIN = 18  # 19F -> 1px, 40F+ -> 22px (1px per degree)
 BAR_W = 2
 BAR_STEP = 3
 NO_GO_LINE_F = 28
+
+# ---------- Animation ----------
+FRAME_MS = 50  # 20 fps
+BAR_STAGGER = 1  # frames between each bar starting to grow (left to right)
+BAR_GROW = 5  # frames for one bar to reach full height
+HOLD_MS = 15000  # hold the finished chart for the rest of the display time
 
 # ---------- Zones (Backyard Snowstorm chart) ----------
 def zone_color(wb):
@@ -226,29 +232,15 @@ def render_view(m):
         ],
     )
 
-    # dotted no-go line, drawn behind the bars
-    line_y = CHART_H - (NO_GO_LINE_F - SCALE_MIN)
-    layers = [
-        render.Padding(pad = (x, line_y, 0, 0), child = render.Box(width = 1, height = 1, color = "#555555"))
-        for x in range(0, len(fc) * BAR_STEP - 1, 2)
-    ]
+    heights = [max(1, min(CHART_H, v - SCALE_MIN)) for v in fc]
+    colors = [zone_color(v) for v in fc]
 
-    for i, v in enumerate(fc):
-        h = max(1, min(CHART_H, v - SCALE_MIN))
-        layers.append(render.Padding(
-            pad = (i * BAR_STEP, CHART_H - h, 0, 0),
-            child = render.Box(width = BAR_W, height = h, color = zone_color(v)),
-        ))
-
+    # window underline spans bars first_bar..last_bar (bar i = hour i + 1)
     ws, wl = best_window(vals)
+    first_bar = max(ws - 1, 0)
+    last_bar = ws + wl - 2 if wl > 0 else -1
+
     if wl > 0:
-        first_bar = max(ws - 1, 0)
-        last_bar = ws + wl - 2  # bar index of the last window hour
-        if last_bar >= first_bar:
-            layers.append(render.Padding(
-                pad = (first_bar * BAR_STEP, CHART_H + 1, 0, 0),
-                child = render.Box(width = (last_bar - first_bar + 1) * BAR_STEP - 1, height = 1, color = "#ffffff"),
-            ))
         lo = min(vals[ws:ws + wl])
         start_lbl = "NOW" if ws == 0 else hour_label(m["start_hour"] + ws)
         bottom = render.Row(children = [
@@ -258,13 +250,64 @@ def render_view(m):
     else:
         bottom = render.Text("NO WINDOW 12H", font = "tom-thumb", color = "#e5352b")
 
+    left_layer = render.Padding(pad = (1, -2, 0, 0), child = left)
+    bottom_layer = render.Padding(pad = (1, 27, 0, 0), child = bottom)
+
+    def frame(t):
+        chart = chart_layers(heights, colors, first_bar, last_bar, t)
+        return render.Stack(children = [
+            left_layer,
+            render.Padding(pad = (27, 0, 0, 0), child = render.Stack(children = chart)),
+            bottom_layer,
+        ])
+
+    # Build: bars grow left to right, then the finished chart holds
+    build = (len(fc) - 1) * BAR_STAGGER + BAR_GROW + 1
+    frames = [frame(t) for t in range(build)]
+    final = frames[-1]
+    frames += [final] * (HOLD_MS // FRAME_MS)
+
     return render.Root(
-        child = render.Stack(children = [
-            render.Padding(pad = (1, -2, 0, 0), child = left),
-            render.Padding(pad = (27, 0, 0, 0), child = render.Stack(children = layers)),
-            render.Padding(pad = (1, 26, 0, 0), child = bottom),
-        ]),
+        delay = FRAME_MS,
+        show_full_animation = True,
+        child = render.Animation(children = frames),
     )
+
+# Chart layers at animation frame t. Bar i starts growing at t = i * BAR_STAGGER
+# and eases out to full height over BAR_GROW frames. The window underline
+# extends as each of its bars finishes.
+def chart_layers(heights, colors, first_bar, last_bar, t):
+    line_y = CHART_H - (NO_GO_LINE_F - SCALE_MIN)
+    layers = [
+        render.Padding(pad = (x, line_y, 0, 0), child = render.Box(width = 1, height = 1, color = "#555555"))
+        for x in range(0, len(heights) * BAR_STEP - 1, 2)
+    ]
+
+    done_through = -1  # highest bar index at full height
+    for i, full in enumerate(heights):
+        p = (t - i * BAR_STAGGER) / float(BAR_GROW)
+        if p <= 0:
+            continue
+        if p >= 1:
+            h = full
+            done_through = i
+        else:
+            ease = 1.0 - (1.0 - p) * (1.0 - p)
+            h = int(math.floor(full * ease + 0.5))
+        if h < 1:
+            continue  # a 0-height Box would expand to fill its parent
+        layers.append(render.Padding(
+            pad = (i * BAR_STEP, CHART_H - h, 0, 0),
+            child = render.Box(width = BAR_W, height = h, color = colors[i]),
+        ))
+
+    end_bar = min(last_bar, done_through)
+    if end_bar >= first_bar:
+        layers.append(render.Padding(
+            pad = (first_bar * BAR_STEP, CHART_H + 1, 0, 0),
+            child = render.Box(width = (end_bar - first_bar + 1) * BAR_STEP - 1, height = 1, color = "#ffffff"),
+        ))
+    return layers
 
 def render_error(msg):
     return render.Root(

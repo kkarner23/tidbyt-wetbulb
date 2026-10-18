@@ -2,7 +2,9 @@
 
 A [Tidbyt](https://tidbyt.com) app for backyard snowmaking. It shows the current wet bulb temperature, the 3-hour trend, a 12-hour forecast chart, and the best snowmaking window for your location. GitHub Actions updates it every 30 minutes - no server, no local machine.
 
-![Preview](docs/preview.png)
+![Animation](docs/animation.gif)
+
+![Scenarios](docs/preview.png)
 
 ## What it shows
 
@@ -10,10 +12,11 @@ A [Tidbyt](https://tidbyt.com) app for backyard snowmaking. It shows the current
 |---|---|
 | Big number (top left) | Current wet bulb (F), colored by zone |
 | Arrow + number | Change over the next 3 hours (cyan ▼ falling, orange ▲ rising, gray - flat) |
-| Bars (right) | Next 12 hours, one bar per hour, colored by zone. 1px per degree, 17F floor, 40F ceiling |
+| Bars (right) | Next 12 hours, one bar per hour, colored by zone. 1px per degree, 19F floor, 40F ceiling |
 | Dotted line | 28F - bars above it are in the no-go zone |
 | White underline | Best window - longest run of hours at 27F or colder |
 | Bottom row | `GO start-end LO##` (window and its lowest wet bulb), or `NO WINDOW 12H` |
+| Animation | Bars grow in left to right (about 1 second), the window underline follows, then the chart holds |
 
 It only appears on your Tidbyt when the current wet bulb or any of the next 12 hours is at or below 39F (configurable). The rest of the time it removes itself from the rotation.
 

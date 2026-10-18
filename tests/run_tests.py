@@ -113,6 +113,16 @@ def run(name, extra, config=(), rename_main=False):
     return r, os.path.exists(gif) and os.path.getsize(gif) > 0
 
 
+def gif_frames(path):
+    """Frame count of a rendered gif, or None if Pillow isn't installed."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    with Image.open(path) as im:
+        return getattr(im, "n_frames", 1)
+
+
 SCENARIOS = [
     # name, start hour, now(obs) wb, 13 hourly wb values (index 0 = current hour), obs age, expect
     ("falling", 17, 31, [31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 22, 21, 22], 20, "GO 9P-6A LO21"),
@@ -171,8 +181,11 @@ def fetch_obs(station, lat, lon, now, ua):
         r, made = run(name, extra, ["hide_above=0"])
         log = r.stdout + r.stderr
         ok = made and "source=nws" in log
+        frames = gif_frames(os.path.join(OUT, name + ".gif")) if made else 0
+        ok = ok and (frames is None or frames > 1)
         failures += not ok
-        print("%s render %-8s expect '%s'" % ("PASS" if ok else "FAIL", name, expect))
+        print("%s render %-8s expect '%s'%s" % (
+            "PASS" if ok else "FAIL", name, expect, "" if frames is None else " (%d frames)" % frames))
         if not ok:
             print(log)
 
